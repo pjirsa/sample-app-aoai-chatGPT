@@ -35,6 +35,11 @@ from backend.utils import (
     convert_to_pf_format,
     format_pf_non_streaming_response,
 )
+import semantic_kernel as sk
+from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
+from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
+from semantic_kernel.connectors.search.google import GoogleSearch
+from semantic_kernel.functions import KernelParameterMetadata, KernelPlugin
 
 bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 
@@ -236,6 +241,149 @@ async def init_cosmosdb_client():
         logging.debug("CosmosDB not configured")
 
     return cosmos_conversation_client
+
+
+async def init_semantic_kernel(selected_model="gpt-4o"):
+    """
+    Initialize a Semantic Kernel instance with AsyncAzureChatCompletion and Google search.
+    
+    Args:
+        selected_model (str): The name of the model to use. Default is 'gpt-4o'.
+        
+    Returns:
+        tuple: (semantic_kernel.Kernel, GoogleSearch) - The initialized Semantic Kernel instance 
+               and the Google search plugin.
+               
+    Raises:
+        Exception: If there are issues with initialization or configuration.
+    """
+    try:
+                # API version check
+        if (
+            app_settings.azure_openai.preview_api_version
+            < MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION
+        ):
+            raise ValueError(
+                f"The minimum supported Azure OpenAI preview API version is '{MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION}'"
+            )
+
+        # Endpoint
+        if (
+            not app_settings.azure_openai.endpoint and
+            not app_settings.azure_openai.resource
+        ):
+            raise ValueError(
+                "AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_RESOURCE is required"
+            )
+
+        endpoint = (
+            app_settings.azure_openai.endpoint
+            if app_settings.azure_openai.endpoint
+            else f"https://{app_settings.azure_openai.resource}.openai.azure.com/"
+        )
+
+        # Authentication
+        aoai_api_key = app_settings.azure_openai.key
+        ad_token_provider = None
+        if not aoai_api_key:
+            logging.debug("No AZURE_OPENAI_KEY found, using Azure Entra ID auth")
+            async with DefaultAzureCredential() as credential:
+                ad_token_provider = get_bearer_token_provider(
+                    credential,
+                    "https://cognitiveservices.azure.com/.default"
+                )
+
+        # Deployment
+        deployment = app_settings.azure_openai.model
+        if not deployment:
+            raise ValueError("AZURE_OPENAI_MODEL is required")
+
+        # Default Headers
+        default_headers = {"x-ms-useragent": USER_AGENT}
+        
+        if not endpoint or not deployment:
+            raise ValueError("Missing required configuration for Semantic Kernel initialization.")
+        
+        # Create a new kernel instance
+        kernel = sk.Kernel()
+        
+        # Add Async Azure Chat Completion service
+        azure_chat_completion = AsyncAzureOpenAI(
+            deployment_name=deployment,
+            endpoint=endpoint,
+            api_key=aoai_api_key,
+            api_version=app_settings.azure_openai.preview_api_version
+        )
+        
+        # Set up default headers in line with existing AsyncAzureOpenAI setup
+        # default_headers = {"x-ms-useragent": USER_AGENT}
+        # azure_chat_completion.client_config.default_headers = default_headers
+        
+        # Register the Async Azure Chat Completion service as the default
+        kernel.add_service(azure_chat_completion)
+        
+        # Initialize Google Search Plugin
+        google_api_key = os.environ.get("GOOGLE_API_KEY")
+        google_search_engine_id = os.environ.get("GOOGLE_SEARCH_ENGINE_ID")
+        
+        google_plugin = None
+        if google_api_key and google_search_engine_id:
+            google_search = GoogleSearch(
+                api_key=google_api_key,
+                search_engine_id=google_search_engine_id
+            )
+            
+            # Add Google Search as a plugin using KernelPlugin.from_text_search_with_search
+            google_plugin = KernelPlugin.from_text_search_with_search(
+                google_search,
+                plugin_name="WebSearch",
+                description="Search the web using Google to get up-to-date information.",
+                parameters=[
+                    KernelParameterMetadata(
+                        name="query",
+                        description="The search query.",
+                        type="str",
+                        is_required=True,
+                        type_object=str,
+                    ),
+                    KernelParameterMetadata(
+                        name="top",
+                        description="The number of results to return.",
+                        type="int",
+                        is_required=False,
+                        default_value=3,
+                        type_object=int,
+                    ),
+                    KernelParameterMetadata(
+                        name="skip",
+                        description="The number of results to skip.",
+                        type="int",
+                        is_required=False,
+                        default_value=0,
+                        type_object=int,
+                    ),
+                    KernelParameterMetadata(
+                        name="siteSearch",
+                        description="Limit search results to specific websites or domains.",
+                        type="str",
+                        is_required=False,
+                        default_value="",
+                        type_object=str,
+                    )
+                ],
+            )
+            
+            kernel.add_plugin(google_plugin)
+            logging.info("Google search plugin registered with Semantic Kernel as WebSearch.")
+        else:
+            logging.warning("GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID environment variables not set. Web search functionality will not be available.")
+        
+        logging.info(f"Semantic Kernel initialized with async model: {deployment}")
+        return kernel, google_plugin
+        
+    except Exception as e:
+        logging.exception("Exception in Semantic Kernel initialization")
+        raise e
 
 
 def prepare_model_args(request_body, request_headers):
