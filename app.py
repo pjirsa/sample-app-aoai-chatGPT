@@ -17,6 +17,13 @@ from quart import (
 )
 
 from openai import AsyncAzureOpenAI
+from semantic_kernel import Kernel
+from semantic_kernel.connectors.ai import PromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion
+from semantic_kernel.connectors.search_engine import GoogleConnector
+from semantic_kernel.core_plugins import WebSearchEnginePlugin
+from semantic_kernel.functions import KernelArguments
+
 from azure.identity.aio import (
     DefaultAzureCredential,
     get_bearer_token_provider
