@@ -21,6 +21,7 @@ from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai import PromptExecutionSettings
 from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion
 from semantic_kernel.connectors.search_engine import GoogleConnector
+from semantic_kernel.contents import ChatHistory
 from semantic_kernel.core_plugins import WebSearchEnginePlugin
 from semantic_kernel.functions import KernelArguments
 
@@ -386,7 +387,7 @@ async def init_semantic_kernel(selected_model="gpt-4o"):
             logging.warning("GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID environment variables not set. Web search functionality will not be available.")
         
         logging.info(f"Semantic Kernel initialized with async model: {deployment}")
-        return kernel, google_plugin
+        return kernel
         
     except Exception as e:
         logging.exception("Exception in Semantic Kernel initialization")
@@ -396,13 +397,9 @@ async def init_semantic_kernel(selected_model="gpt-4o"):
 def prepare_model_args(request_body, request_headers):
     request_messages = request_body.get("messages", [])
     messages = []
+    history = ChatHistory()
     if not app_settings.datasource:
-        messages = [
-            {
-                "role": "system",
-                "content": app_settings.azure_openai.system_message
-            }
-        ]
+        history.add_system_message(app_settings.azure_openai.system_message)
 
     for message in request_messages:
         if message:
@@ -572,6 +569,7 @@ async def process_function_call(response):
 
 async def send_chat_request(request_body, request_headers):
     filtered_messages = []
+    history = ChatHistory()
     messages = request_body.get("messages", [])
     for message in messages:
         if message.get("role") != 'tool':
@@ -581,7 +579,17 @@ async def send_chat_request(request_body, request_headers):
     model_args = prepare_model_args(request_body, request_headers)
 
     try:
-        azure_openai_client = await init_openai_client()
+        # azure_openai_client = await init_openai_client()
+        azure_openai_client = await init_semantic_kernel()
+        system_message = """
+        You are a chat bot, specialized in Semantic Kernel, Microsoft LLM orchestration SDK.
+        Assume questions are related to that, and use the Bing search plugin to find answers.
+        """
+        history.add_system_message(system_message)
+        history.add_user_message("Hi there, who are you?")
+        history.add_assistant_message("I am Mosscap, a chat bot. I'm trying to figure out what people need.")
+        
+        raw_response = await azure_openai_client.get_service
         raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
         response = raw_response.parse()
         apim_request_id = raw_response.headers.get("apim-request-id") 
