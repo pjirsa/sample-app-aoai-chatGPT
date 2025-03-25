@@ -16,10 +16,10 @@ from quart import (
     current_app,
 )
 
-from openai import AsyncAzureOpenAI
+# from openai import AsyncAzureOpenAI
 from semantic_kernel import Kernel
 from semantic_kernel.connectors.ai import PromptExecutionSettings
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion
+from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion, AzureChatPromptExecutionSettings
 from semantic_kernel.connectors.search_engine import GoogleConnector
 from semantic_kernel.contents import ChatHistory
 from semantic_kernel.core_plugins import WebSearchEnginePlugin
@@ -123,85 +123,8 @@ frontend_settings = {
 # Enable Microsoft Defender for Cloud Integration
 MS_DEFENDER_ENABLED = os.environ.get("MS_DEFENDER_ENABLED", "true").lower() == "true"
 
-
 azure_openai_tools = []
 azure_openai_available_tools = []
-
-# Initialize Azure OpenAI Client
-async def init_openai_client():
-    azure_openai_client = None
-    
-    try:
-        # API version check
-        if (
-            app_settings.azure_openai.preview_api_version
-            < MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION
-        ):
-            raise ValueError(
-                f"The minimum supported Azure OpenAI preview API version is '{MINIMUM_SUPPORTED_AZURE_OPENAI_PREVIEW_API_VERSION}'"
-            )
-
-        # Endpoint
-        if (
-            not app_settings.azure_openai.endpoint and
-            not app_settings.azure_openai.resource
-        ):
-            raise ValueError(
-                "AZURE_OPENAI_ENDPOINT or AZURE_OPENAI_RESOURCE is required"
-            )
-
-        endpoint = (
-            app_settings.azure_openai.endpoint
-            if app_settings.azure_openai.endpoint
-            else f"https://{app_settings.azure_openai.resource}.openai.azure.com/"
-        )
-
-        # Authentication
-        aoai_api_key = app_settings.azure_openai.key
-        ad_token_provider = None
-        if not aoai_api_key:
-            logging.debug("No AZURE_OPENAI_KEY found, using Azure Entra ID auth")
-            async with DefaultAzureCredential() as credential:
-                ad_token_provider = get_bearer_token_provider(
-                    credential,
-                    "https://cognitiveservices.azure.com/.default"
-                )
-
-        # Deployment
-        deployment = app_settings.azure_openai.model
-        if not deployment:
-            raise ValueError("AZURE_OPENAI_MODEL is required")
-
-        # Default Headers
-        default_headers = {"x-ms-useragent": USER_AGENT}
-
-        # Remote function calls
-        if app_settings.azure_openai.function_call_azure_functions_enabled:
-            azure_functions_tools_url = f"{app_settings.azure_openai.function_call_azure_functions_tools_base_url}?code={app_settings.azure_openai.function_call_azure_functions_tools_key}"
-            async with httpx.AsyncClient() as client:
-                response = await client.get(azure_functions_tools_url)
-            response_status_code = response.status_code
-            if response_status_code == httpx.codes.OK:
-                azure_openai_tools.extend(json.loads(response.text))
-                for tool in azure_openai_tools:
-                    azure_openai_available_tools.append(tool["function"]["name"])
-            else:
-                logging.error(f"An error occurred while getting OpenAI Function Call tools metadata: {response.status_code}")
-
-        
-        azure_openai_client = AsyncAzureOpenAI(
-            api_version=app_settings.azure_openai.preview_api_version,
-            api_key=aoai_api_key,
-            azure_ad_token_provider=ad_token_provider,
-            default_headers=default_headers,
-            azure_endpoint=endpoint,
-        )
-
-        return azure_openai_client
-    except Exception as e:
-        logging.exception("Exception in Azure OpenAI initialization", e)
-        azure_openai_client = None
-        raise e
 
 async def openai_remote_azure_function_call(function_name, function_args):
     if app_settings.azure_openai.function_call_azure_functions_enabled is not True:
@@ -251,7 +174,7 @@ async def init_cosmosdb_client():
     return cosmos_conversation_client
 
 
-async def init_semantic_kernel(selected_model="gpt-4o"):
+async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureChatCompletion]:
     """
     Initialize a Semantic Kernel instance with AsyncAzureChatCompletion and Google search.
     
@@ -316,7 +239,8 @@ async def init_semantic_kernel(selected_model="gpt-4o"):
         kernel = sk.Kernel()
         
         # Add Async Azure Chat Completion service
-        azure_chat_completion = AsyncAzureOpenAI(
+        azure_chat_completion = AzureChatCompletion(
+            service_id="chat",
             deployment_name=deployment,
             endpoint=endpoint,
             api_key=aoai_api_key,
@@ -387,16 +311,16 @@ async def init_semantic_kernel(selected_model="gpt-4o"):
             logging.warning("GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID environment variables not set. Web search functionality will not be available.")
         
         logging.info(f"Semantic Kernel initialized with async model: {deployment}")
-        return kernel
+        return kernel, azure_chat_completion
         
     except Exception as e:
         logging.exception("Exception in Semantic Kernel initialization")
         raise e
 
 
-def prepare_model_args(request_body, request_headers):
+def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, AzureChatPromptExecutionSettings]:
     request_messages = request_body.get("messages", [])
-    messages = []
+    # messages = []
     history = ChatHistory()
     if not app_settings.datasource:
         history.add_system_message(app_settings.azure_openai.system_message)
@@ -405,96 +329,94 @@ def prepare_model_args(request_body, request_headers):
         if message:
             match message["role"]:
                 case "user":
-                    messages.append(
-                        {
-                            "role": message["role"],
-                            "content": message["content"]
-                        }
-                    )
+                    history.add_user_message(message["content"])                    
                 case "assistant" | "function" | "tool":
                     messages_helper = {}
                     messages_helper["role"] = message["role"]
-                    if "name" in message:
-                        messages_helper["name"] = message["name"]
-                    if "function_call" in message:
-                        messages_helper["function_call"] = message["function_call"]
                     messages_helper["content"] = message["content"]
-                    if "context" in message:
-                        context_obj = json.loads(message["context"])
-                        messages_helper["context"] = context_obj
-                    
-                    messages.append(messages_helper)
+                    history.add_message(messages_helper)
 
 
-    user_json = None
-    if (MS_DEFENDER_ENABLED):
-        authenticated_user_details = get_authenticated_user_details(request_headers)
-        conversation_id = request_body.get("conversation_id", None)
-        application_name = app_settings.ui.title
-        user_json = get_msdefender_user_json(authenticated_user_details, request_headers, conversation_id, application_name)
+    # user_json = None
+    # if (MS_DEFENDER_ENABLED):
+    #     authenticated_user_details = get_authenticated_user_details(request_headers)
+    #     conversation_id = request_body.get("conversation_id", None)
+    #     application_name = app_settings.ui.title
+    #     user_json = get_msdefender_user_json(authenticated_user_details, request_headers, conversation_id, application_name)
 
-    model_args = {
-        "messages": messages,
-        "temperature": app_settings.azure_openai.temperature,
-        "max_tokens": app_settings.azure_openai.max_tokens,
-        "top_p": app_settings.azure_openai.top_p,
-        "stop": app_settings.azure_openai.stop_sequence,
-        "stream": app_settings.azure_openai.stream,
-        "model": app_settings.azure_openai.model,
-        "user": user_json
-    }
+    execution_settings = AzureChatPromptExecutionSettings(
+        service_id="chat",
+        max_tokens=app_settings.azure_openai.max_tokens,
+        temperature=app_settings.azure_openai.temperature,
+        top_p=app_settings.azure_openai.top_p,
+        # function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
+        stop=app_settings.azure_openai.stop_sequence,
+    )
 
-    if len(messages) > 0:
-        if messages[-1]["role"] == "user":
-            if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
-                model_args["tools"] = azure_openai_tools
+    # model_args = {
+    #     "messages": messages,
+    #     "temperature": app_settings.azure_openai.temperature,
+    #     "max_tokens": app_settings.azure_openai.max_tokens,
+    #     "top_p": app_settings.azure_openai.top_p,
+    #     "stop": app_settings.azure_openai.stop_sequence,
+    #     "stream": app_settings.azure_openai.stream,
+    #     "model": app_settings.azure_openai.model,
+    #     "user": user_json
+    # }
 
-            if app_settings.datasource:
-                model_args["extra_body"] = {
-                    "data_sources": [
-                        app_settings.datasource.construct_payload_configuration(
-                            request=request
-                        )
-                    ]
-                }
 
-    model_args_clean = copy.deepcopy(model_args)
-    if model_args_clean.get("extra_body"):
-        secret_params = [
-            "key",
-            "connection_string",
-            "embedding_key",
-            "encoded_api_key",
-            "api_key",
-        ]
-        for secret_param in secret_params:
-            if model_args_clean["extra_body"]["data_sources"][0]["parameters"].get(
-                secret_param
-            ):
-                model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                    secret_param
-                ] = "*****"
-        authentication = model_args_clean["extra_body"]["data_sources"][0][
-            "parameters"
-        ].get("authentication", {})
-        for field in authentication:
-            if field in secret_params:
-                model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                    "authentication"
-                ][field] = "*****"
-        embeddingDependency = model_args_clean["extra_body"]["data_sources"][0][
-            "parameters"
-        ].get("embedding_dependency", {})
-        if "authentication" in embeddingDependency:
-            for field in embeddingDependency["authentication"]:
-                if field in secret_params:
-                    model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-                        "embedding_dependency"
-                    ]["authentication"][field] = "*****"
+    # if len(messages) > 0:
+    #     if messages[-1]["role"] == "user":
+    #         if app_settings.azure_openai.function_call_azure_functions_enabled and len(azure_openai_tools) > 0:
+    #             model_args["tools"] = azure_openai_tools
 
-    logging.debug(f"REQUEST BODY: {json.dumps(model_args_clean, indent=4)}")
+    # Replace this section with how Semantic Kernel calls 'on-your-data'
+    #         if app_settings.datasource:
+    #             model_args["extra_body"] = {
+    #                 "data_sources": [
+    #                     app_settings.datasource.construct_payload_configuration(
+    #                         request=request
+    #                     )
+    #                 ]
+    #             }
 
-    return model_args
+    # model_args_clean = copy.deepcopy(model_args)
+    # if model_args_clean.get("extra_body"):
+    #     secret_params = [
+    #         "key",
+    #         "connection_string",
+    #         "embedding_key",
+    #         "encoded_api_key",
+    #         "api_key",
+    #     ]
+    #     for secret_param in secret_params:
+    #         if model_args_clean["extra_body"]["data_sources"][0]["parameters"].get(
+    #             secret_param
+    #         ):
+    #             model_args_clean["extra_body"]["data_sources"][0]["parameters"][
+    #                 secret_param
+    #             ] = "*****"
+    #     authentication = model_args_clean["extra_body"]["data_sources"][0][
+    #         "parameters"
+    #     ].get("authentication", {})
+    #     for field in authentication:
+    #         if field in secret_params:
+    #             model_args_clean["extra_body"]["data_sources"][0]["parameters"][
+    #                 "authentication"
+    #             ][field] = "*****"
+    #     embeddingDependency = model_args_clean["extra_body"]["data_sources"][0][
+    #         "parameters"
+    #     ].get("embedding_dependency", {})
+    #     if "authentication" in embeddingDependency:
+    #         for field in embeddingDependency["authentication"]:
+    #             if field in secret_params:
+    #                 model_args_clean["extra_body"]["data_sources"][0]["parameters"][
+    #                     "embedding_dependency"
+    #                 ]["authentication"][field] = "*****"
+
+    # logging.debug(f"REQUEST BODY: {json.dumps(model_args_clean, indent=4)}")
+
+    return history, execution_settings
 
 
 async def promptflow_request(request):
@@ -569,18 +491,17 @@ async def process_function_call(response):
 
 async def send_chat_request(request_body, request_headers):
     filtered_messages = []
-    history = ChatHistory()
     messages = request_body.get("messages", [])
     for message in messages:
         if message.get("role") != 'tool':
             filtered_messages.append(message)
             
     request_body['messages'] = filtered_messages
-    model_args = prepare_model_args(request_body, request_headers)
+    history, chat_settings = prepare_model_args(request_body, request_headers)
 
     try:
         # azure_openai_client = await init_openai_client()
-        azure_openai_client = await init_semantic_kernel()
+        kernel, chat_client = await init_semantic_kernel()
         system_message = """
         You are a chat bot, specialized in Semantic Kernel, Microsoft LLM orchestration SDK.
         Assume questions are related to that, and use the Bing search plugin to find answers.
@@ -589,10 +510,8 @@ async def send_chat_request(request_body, request_headers):
         history.add_user_message("Hi there, who are you?")
         history.add_assistant_message("I am Mosscap, a chat bot. I'm trying to figure out what people need.")
         
-        raw_response = await azure_openai_client.get_service
-        raw_response = await azure_openai_client.chat.completions.with_raw_response.create(**model_args)
-        response = raw_response.parse()
-        apim_request_id = raw_response.headers.get("apim-request-id") 
+        response = await chat_client.get_chat_message_content(history, chat_settings, kernel=kernel)
+        apim_request_id = response.metadata.get("apim-request-id")
     except Exception as e:
         logging.exception("Exception in send_chat_request")
         raise e
@@ -1200,20 +1119,23 @@ async def ensure_cosmos():
 async def generate_title(conversation_messages) -> str:
     ## make sure the messages are sorted by _ts descending
     title_prompt = "Summarize the conversation so far into a 4-word or less title. Do not use any quotation marks or punctuation. Do not include any other commentary or description."
-
-    messages = [
-        {"role": msg["role"], "content": msg["content"]}
-        for msg in conversation_messages
-    ]
-    messages.append({"role": "user", "content": title_prompt})
+    messages = ChatHistory()
+    for msg in conversation_messages:        
+        messages.add_message({"role": msg["role"], "content": msg["content"]})
 
     try:
-        azure_openai_client = await init_openai_client()
-        response = await azure_openai_client.chat.completions.create(
-            model=app_settings.azure_openai.model, messages=messages, temperature=1, max_tokens=64
+        kernel, chat_client = await init_semantic_kernel()
+        settings = AzureChatPromptExecutionSettings(
+            service_id="title",
+            temperature=1,
+            max_tokens=64,
+        )
+        # azure_openai_client = await init_openai_client()
+        response = await chat_client.get_chat_message_content(
+            messages, settings
         )
 
-        title = response.choices[0].message.content
+        title = response.items[0].to_chat_message_content().content
         return title
     except Exception as e:
         logging.exception("Exception while generating title", e)
