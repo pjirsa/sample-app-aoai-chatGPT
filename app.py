@@ -510,8 +510,9 @@ async def send_chat_request(request_body, request_headers):
         history.add_user_message("Hi there, who are you?")
         history.add_assistant_message("I am Mosscap, a chat bot. I'm trying to figure out what people need.")
         
-        response = await chat_client.get_chat_message_content(history, chat_settings, kernel=kernel)
-        apim_request_id = response.metadata.get("apim-request-id")
+        response = chat_client.get_streaming_chat_message_content(history, chat_settings, kernel=kernel)
+        # apim_request_id = response.metadata.get("apim-request-id")
+        apim_request_id = ''
     except Exception as e:
         logging.exception("Exception in send_chat_request")
         raise e

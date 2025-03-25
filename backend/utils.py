@@ -6,6 +6,8 @@ import dataclasses
 
 from typing import List
 
+from semantic_kernel.contents import StreamingChatMessageContent
+
 DEBUG = os.environ.get("DEBUG", "false")
 if DEBUG.lower() == "true":
     logging.basicConfig(level=logging.DEBUG)
@@ -106,19 +108,20 @@ def format_non_streaming_response(chatCompletion, history_metadata, apim_request
 
     return {}
 
-def format_stream_response(chatCompletionChunk, history_metadata, apim_request_id):
+def format_stream_response(chatCompletionChunk: StreamingChatMessageContent, history_metadata, apim_request_id):
+    chunk = chatCompletionChunk.inner_content
     response_obj = {
-        "id": chatCompletionChunk.id,
-        "model": chatCompletionChunk.model,
-        "created": chatCompletionChunk.created,
-        "object": chatCompletionChunk.object,
+        "id": chunk.id,
+        "model": chunk.model,
+        "created": chunk.created,
+        "object": chunk.object,
         "choices": [{"messages": []}],
         "history_metadata": history_metadata,
         "apim-request-id": apim_request_id,
     }
 
-    if len(chatCompletionChunk.choices) > 0:
-        delta = chatCompletionChunk.choices[0].delta
+    if len(chunk.choices) > 0:
+        delta = chunk.choices[0].delta
         if delta:
             if hasattr(delta, "context"):
                 messageObj = {"role": "tool", "content": json.dumps(delta.context)}
