@@ -553,7 +553,7 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
 
 
 async def stream_chat_request(request_body, request_headers):
-    response, apim_request_id = await send_chat_request(request_body, request_headers)
+    response, apim_request_id = await send_chat_request(request_body, request_headers, is_streaming=True)
     history_metadata = request_body.get("history_metadata", {})
 
     async def generate(apim_request_id, history_metadata):
