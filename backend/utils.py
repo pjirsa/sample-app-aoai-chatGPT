@@ -6,7 +6,7 @@ import dataclasses
 
 from typing import List
 
-from semantic_kernel.contents import StreamingChatMessageContent
+from semantic_kernel.contents import StreamingChatMessageContent, AuthorRole
 
 DEBUG = os.environ.get("DEBUG", "false")
 if DEBUG.lower() == "true":
@@ -109,6 +109,8 @@ def format_non_streaming_response(chatCompletion, history_metadata, apim_request
     return {}
 
 def format_stream_response(chatCompletionChunk: StreamingChatMessageContent, history_metadata, apim_request_id):
+    if chatCompletionChunk.role == AuthorRole.TOOL:
+        return {}
     chunk = chatCompletionChunk.inner_content
     response_obj = {
         "id": chunk.id,

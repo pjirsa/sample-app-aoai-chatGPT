@@ -311,7 +311,7 @@ async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureCh
                 ],
             )
 
-            # kernel.add_plugin(google_plugin)
+            kernel.add_plugin(google_plugin)
             logging.info(
                 "Google search plugin registered with Semantic Kernel as WebSearch.")
         else:
