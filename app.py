@@ -445,7 +445,7 @@ async def promptflow_request(request):
             f"An error occurred while making promptflow_request: {e}")
 
 
-async def send_chat_request(request_body, request_headers):
+async def send_chat_request(request_body, request_headers, is_streaming: bool = False):
     filtered_messages = []
     messages = request_body.get("messages", [])
     for message in messages:
@@ -459,7 +459,10 @@ async def send_chat_request(request_body, request_headers):
         # azure_openai_client = await init_openai_client()
         kernel, chat_service = await init_semantic_kernel()
         
-        response = chat_service.get_streaming_chat_message_content(history, chat_settings, kernel=kernel)
+        if is_streaming:
+            response = chat_service.get_streaming_chat_message_content(history, chat_settings, kernel=kernel)
+        else:
+            response = await chat_service.get_chat_message_content(history, chat_settings, kernel=kernel)
         # apim_request_id = response.metadata.get("apim-request-id")
         apim_request_id = ''
     except Exception as e:
@@ -550,7 +553,7 @@ async def process_function_call_stream(completionChunk, function_call_stream_sta
 
 
 async def stream_chat_request(request_body, request_headers):
-    response, apim_request_id = await send_chat_request(request_body, request_headers)
+    response, apim_request_id = await send_chat_request(request_body, request_headers, is_streaming=True)
     history_metadata = request_body.get("history_metadata", {})
 
     async def generate(apim_request_id, history_metadata):

@@ -78,18 +78,21 @@ def generateFilterString(userToken):
 
 
 def format_non_streaming_response(chatCompletion, history_metadata, apim_request_id):
+    if chatCompletion.role == AuthorRole.TOOL:
+        return {}
+    chunk = chatCompletion.inner_content
     response_obj = {
-        "id": chatCompletion.id,
-        "model": chatCompletion.model,
-        "created": chatCompletion.created,
-        "object": chatCompletion.object,
+        "id": chunk.id,
+        "model": chunk.model,
+        "created": chunk.created,
+        "object": chunk.object,
         "choices": [{"messages": []}],
         "history_metadata": history_metadata,
         "apim-request-id": apim_request_id,
     }
 
-    if len(chatCompletion.choices) > 0:
-        message = chatCompletion.choices[0].message
+    if len(chunk.choices) > 0:
+        message = chunk.choices[0].message
         if message:
             if hasattr(message, "context"):
                 response_obj["choices"][0]["messages"].append(
