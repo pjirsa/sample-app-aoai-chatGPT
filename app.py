@@ -16,15 +16,6 @@ from quart import (
     current_app,
 )
 
-# from openai import AsyncAzureOpenAI
-from semantic_kernel import Kernel
-from semantic_kernel.connectors.ai import PromptExecutionSettings
-from semantic_kernel.connectors.ai.open_ai import OpenAIChatCompletion, AzureChatCompletion, AzureChatPromptExecutionSettings
-from semantic_kernel.connectors.search_engine import GoogleConnector
-from semantic_kernel.contents import ChatHistory
-from semantic_kernel.core_plugins import WebSearchEnginePlugin
-from semantic_kernel.functions import KernelArguments
-
 from azure.identity.aio import (
     DefaultAzureCredential,
     get_bearer_token_provider
@@ -43,11 +34,13 @@ from backend.utils import (
     convert_to_pf_format,
     format_pf_non_streaming_response,
 )
-import semantic_kernel as sk
-from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion
+from semantic_kernel import Kernel
+from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureAISearchDataSource, ExtraBody, AzureChatPromptExecutionSettings
 from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
+from semantic_kernel.connectors.memory.azure_cognitive_search.azure_ai_search_settings import AzureAISearchSettings
 from semantic_kernel.connectors.search.google import GoogleSearch
 from semantic_kernel.functions import KernelParameterMetadata, KernelPlugin
+from semantic_kernel.contents import ChatHistory, AuthorRole
 
 bp = Blueprint("routes", __name__, static_folder="static",
                template_folder="static")
@@ -127,23 +120,6 @@ MS_DEFENDER_ENABLED = os.environ.get(
 
 azure_openai_tools = []
 azure_openai_available_tools = []
-
-
-async def openai_remote_azure_function_call(function_name, function_args):
-    if app_settings.azure_openai.function_call_azure_functions_enabled is not True:
-        return
-
-    azure_functions_tool_url = f"{app_settings.azure_openai.function_call_azure_functions_tool_base_url}?code={app_settings.azure_openai.function_call_azure_functions_tool_key}"
-    headers = {'content-type': 'application/json'}
-    body = {
-        "tool_name": function_name,
-        "tool_arguments": json.loads(function_args)
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(azure_functions_tool_url, data=json.dumps(body), headers=headers)
-    response.raise_for_status()
-
-    return response.text
 
 
 async def init_cosmosdb_client():
@@ -242,7 +218,7 @@ async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureCh
                 "Missing required configuration for Semantic Kernel initialization.")
 
         # Create a new kernel instance
-        kernel = sk.Kernel()
+        kernel = Kernel()
 
         # Add Async Azure Chat Completion service
         azure_chat_completion = AzureChatCompletion(
@@ -357,92 +333,22 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         max_tokens=app_settings.azure_openai.max_tokens,
         temperature=app_settings.azure_openai.temperature,
         top_p=app_settings.azure_openai.top_p,
-        function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        # function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
         stop=app_settings.azure_openai.stop_sequence,
     )
+    
+    if len(history.messages) > 0:
+        if (history.messages[-1].role == AuthorRole.USER):
+            if app_settings.datasource:
+                azure_ai_search_settings = AzureAISearchSettings.create()
 
-    # Replace this section with how Semantic Kernel calls 'on-your-data'
-    #         if app_settings.datasource:
-    #             model_args["extra_body"] = {
-    #                 "data_sources": [
-    #                     app_settings.datasource.construct_payload_configuration(
-    #                         request=request
-    #                     )
-    #                 ]
-    #             }
-
-    # model_args_clean = copy.deepcopy(model_args)
-    # if model_args_clean.get("extra_body"):
-    #     secret_params = [
-    #         "key",
-    #         "connection_string",
-    #         "embedding_key",
-    #         "encoded_api_key",
-    #         "api_key",
-    #     ]
-    #     for secret_param in secret_params:
-    #         if model_args_clean["extra_body"]["data_sources"][0]["parameters"].get(
-    #             secret_param
-    #         ):
-    #             model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-    #                 secret_param
-    #             ] = "*****"
-    #     authentication = model_args_clean["extra_body"]["data_sources"][0][
-    #         "parameters"
-    #     ].get("authentication", {})
-    #     for field in authentication:
-    #         if field in secret_params:
-    #             model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-    #                 "authentication"
-    #             ][field] = "*****"
-    #     embeddingDependency = model_args_clean["extra_body"]["data_sources"][0][
-    #         "parameters"
-    #     ].get("embedding_dependency", {})
-    #     if "authentication" in embeddingDependency:
-    #         for field in embeddingDependency["authentication"]:
-    #             if field in secret_params:
-    #                 model_args_clean["extra_body"]["data_sources"][0]["parameters"][
-    #                     "embedding_dependency"
-    #                 ]["authentication"][field] = "*****"
-
-    # logging.debug(f"REQUEST BODY: {json.dumps(model_args_clean, indent=4)}")
-
+                az_source = AzureAISearchDataSource.from_azure_ai_search_settings(azure_ai_search_settings=azure_ai_search_settings)
+                extra = ExtraBody(data_sources=[az_source])
+                execution_settings.extra_body = extra
+    
     return history, execution_settings
-
-
-async def promptflow_request(request):
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {app_settings.promptflow.api_key}",
-        }
-        # Adding timeout for scenarios where response takes longer to come back
-        logging.debug(
-            f"Setting timeout to {app_settings.promptflow.response_timeout}")
-        async with httpx.AsyncClient(
-            timeout=float(app_settings.promptflow.response_timeout)
-        ) as client:
-            pf_formatted_obj = convert_to_pf_format(
-                request,
-                app_settings.promptflow.request_field_name,
-                app_settings.promptflow.response_field_name
-            )
-            # NOTE: This only support question and chat_history parameters
-            # If you need to add more parameters, you need to modify the request body
-            response = await client.post(
-                app_settings.promptflow.endpoint,
-                json={
-                    app_settings.promptflow.request_field_name: pf_formatted_obj[-1]["inputs"][app_settings.promptflow.request_field_name],
-                    "chat_history": pf_formatted_obj[:-1],
-                },
-                headers=headers,
-            )
-        resp = response.json()
-        resp["id"] = request["messages"][-1]["id"]
-        return resp
-    except Exception as e:
-        logging.error(
-            f"An error occurred while making promptflow_request: {e}")
 
 
 async def send_chat_request(request_body, request_headers, is_streaming: bool = False):
@@ -479,77 +385,6 @@ async def complete_chat_request(request_body, request_headers):
         response, history_metadata, apim_request_id)
 
     return non_streaming_response
-
-
-class AzureOpenaiFunctionCallStreamState():
-    def __init__(self):
-        self.tool_calls = []                # All tool calls detected in the stream
-        self.tool_name = ""                 # Tool name being streamed
-        self.tool_arguments_stream = ""     # Tool arguments being streamed
-        # JSON with the tool name and arguments currently being streamed
-        self.current_tool_call = None
-        # All function messages to be appended to the chat history
-        self.function_messages = []
-        # Streaming state (INITIAL, STREAMING, COMPLETED)
-        self.streaming_state = "INITIAL"
-
-
-async def process_function_call_stream(completionChunk, function_call_stream_state, request_body, request_headers, history_metadata, apim_request_id):
-    if hasattr(completionChunk, "choices") and len(completionChunk.choices) > 0:
-        response_message = completionChunk.choices[0].delta
-
-        # Function calling stream processing
-        if response_message.tool_calls and function_call_stream_state.streaming_state in ["INITIAL", "STREAMING"]:
-            function_call_stream_state.streaming_state = "STREAMING"
-            for tool_call_chunk in response_message.tool_calls:
-                # New tool call
-                if tool_call_chunk.id:
-                    if function_call_stream_state.current_tool_call:
-                        function_call_stream_state.tool_arguments_stream += tool_call_chunk.function.arguments if tool_call_chunk.function.arguments else ""
-                        function_call_stream_state.current_tool_call[
-                            "tool_arguments"] = function_call_stream_state.tool_arguments_stream
-                        function_call_stream_state.tool_arguments_stream = ""
-                        function_call_stream_state.tool_name = ""
-                        function_call_stream_state.tool_calls.append(
-                            function_call_stream_state.current_tool_call)
-
-                    function_call_stream_state.current_tool_call = {
-                        "tool_id": tool_call_chunk.id,
-                        "tool_name": tool_call_chunk.function.name if function_call_stream_state.tool_name == "" else function_call_stream_state.tool_name
-                    }
-                else:
-                    function_call_stream_state.tool_arguments_stream += tool_call_chunk.function.arguments if tool_call_chunk.function.arguments else ""
-
-        # Function call - Streaming completed
-        elif response_message.tool_calls is None and function_call_stream_state.streaming_state == "STREAMING":
-            function_call_stream_state.current_tool_call[
-                "tool_arguments"] = function_call_stream_state.tool_arguments_stream
-            function_call_stream_state.tool_calls.append(
-                function_call_stream_state.current_tool_call)
-
-            for tool_call in function_call_stream_state.tool_calls:
-                tool_response = await openai_remote_azure_function_call(tool_call["tool_name"], tool_call["tool_arguments"])
-
-                function_call_stream_state.function_messages.append({
-                    "role": "assistant",
-                    "function_call": {
-                        "name": tool_call["tool_name"],
-                        "arguments": tool_call["tool_arguments"]
-                    },
-                    "content": None
-                })
-                function_call_stream_state.function_messages.append({
-                    "tool_call_id": tool_call["tool_id"],
-                    "role": "function",
-                    "name": tool_call["tool_name"],
-                    "content": tool_response,
-                })
-
-            function_call_stream_state.streaming_state = "COMPLETED"
-            return function_call_stream_state.streaming_state
-
-        else:
-            return function_call_stream_state.streaming_state
 
 
 async def stream_chat_request(request_body, request_headers):
@@ -1051,11 +886,12 @@ async def generate_title(conversation_messages) -> str:
     # make sure the messages are sorted by _ts descending
     title_prompt = "Summarize the conversation so far into a 4-word or less title. Do not use any quotation marks or punctuation. Do not include any other commentary or description."
     messages = ChatHistory()
+    messages.add_system_message(title_prompt)
     for msg in conversation_messages:
         messages.add_message({"role": msg["role"], "content": msg["content"]})
 
     try:
-        kernel, chat_client = await init_semantic_kernel()
+        _, chat_client = await init_semantic_kernel()
         settings = AzureChatPromptExecutionSettings(
             service_id="title",
             temperature=1,
