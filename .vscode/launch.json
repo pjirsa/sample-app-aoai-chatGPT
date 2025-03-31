@@ -6,6 +6,7 @@
       "type": "python",
       "request": "launch",
       "module": "quart",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "cwd": "${workspaceFolder}",
       "env": {
           "QUART_APP": "app:app",
