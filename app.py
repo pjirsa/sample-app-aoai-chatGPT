@@ -326,23 +326,23 @@ async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureCh
 
 
         if app_settings.datasource:
-            @vectorstoremodel            
+            @vectorstoremodel
             class Document(BaseModel):
                 chunk_id: Annotated[str, VectorStoreRecordKeyField()]
                 parent_id: Annotated[str, VectorStoreRecordDataField(is_filterable=True)]
                 chunk: Annotated[str, VectorStoreRecordDataField(
-                    has_embedding=True,
-                    embedding_property_name="text_vector",
                     is_full_text_searchable=True)]
                 title: Annotated[str, VectorStoreRecordDataField(is_filterable=True)]
                 text_vector: Annotated[list[float], VectorStoreRecordVectorField(
                     dimensions=1536, 
-                    local_embedding=True,
-                    embedding_settings={"embeddings": OpenAIEmbeddingPromptExecutionSettings(dimensions=1536)})]
+                    local_embedding=False,
+                    #embedding_settings={"embeddings": OpenAIEmbeddingPromptExecutionSettings(dimensions=1536)}
+                )]
             
-            text_search = VectorStoreTextSearch.from_vector_text_search(
-                AzureAISearchCollection[Document](collection_name=app_settings.datasource.index, data_model_type=Document)
-            )
+            search_collection = AzureAISearchCollection[Document](collection_name=app_settings.datasource.index, data_model_type=Document)
+            text_search = VectorStoreTextSearch.from_vector_text_search(search_collection)
+            
+            #test_results = await search_collection.text_search(search_text="Am I allowed to install a hot tub?")
             
             memory_plugin = kernel.add_function(
                 plugin_name="azure_ai_search",
