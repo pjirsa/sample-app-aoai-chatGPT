@@ -35,12 +35,28 @@ from backend.utils import (
     format_pf_non_streaming_response,
 )
 from semantic_kernel import Kernel
-from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureAISearchDataSource, ExtraBody, AzureChatPromptExecutionSettings
+from semantic_kernel.connectors.ai.open_ai import AzureChatCompletion, AzureChatPromptExecutionSettings, AzureTextEmbedding, OpenAIEmbeddingPromptExecutionSettings
 from semantic_kernel.connectors.ai.function_choice_behavior import FunctionChoiceBehavior
 from semantic_kernel.connectors.memory.azure_cognitive_search.azure_ai_search_settings import AzureAISearchSettings
+from semantic_kernel.connectors.memory.azure_ai_search import AzureAISearchCollection
 from semantic_kernel.connectors.search.google import GoogleSearch
 from semantic_kernel.functions import KernelParameterMetadata, KernelPlugin
 from semantic_kernel.contents import ChatHistory, AuthorRole
+from semantic_kernel.data import (
+    VectorSearchFilter,
+    VectorSearchOptions,
+    VectorStoreRecordUtils,
+    VectorStoreTextSearch,
+    VectorStoreRecordKeyField,
+    VectorStoreRecordDataField,
+    VectorStoreRecordVectorField,
+    DistanceFunction,
+    IndexKind,
+    vectorstoremodel,
+)
+from dataclasses import dataclass, field
+from pydantic import BaseModel
+from typing import Annotated
 
 bp = Blueprint("routes", __name__, static_folder="static",
                template_folder="static")
@@ -234,7 +250,20 @@ async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureCh
         azure_chat_completion.client.default_headers.update(default_headers)
 
         # Register the Async Azure Chat Completion service as the default
-        kernel.add_service(azure_chat_completion)        
+        kernel.add_service(azure_chat_completion)
+        
+        # Create embedding service
+        embeddings = AzureTextEmbedding(
+            service_id="embedding", 
+            deployment_name=app_settings.azure_openai.embedding_name,
+            endpoint=endpoint,
+            api_key=aoai_api_key,
+            api_version=app_settings.azure_openai.preview_api_version,
+        )
+        
+        # Register embedding service with kernel and create vectorizer
+        kernel.add_service(embeddings)
+        vectorizer = VectorStoreRecordUtils(kernel)
 
         # Initialize Google Search Plugin
         google_api_key = os.environ.get("GOOGLE_API_KEY")
@@ -290,9 +319,50 @@ async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureCh
             kernel.add_plugin(google_plugin)
             logging.info(
                 "Google search plugin registered with Semantic Kernel as WebSearch.")
+            
         else:
             logging.warning(
                 "GOOGLE_API_KEY or GOOGLE_SEARCH_ENGINE_ID environment variables not set. Web search functionality will not be available.")
+
+
+        if app_settings.datasource:
+            @vectorstoremodel            
+            class Document(BaseModel):
+                chunk_id: Annotated[str, VectorStoreRecordKeyField()]
+                parent_id: Annotated[str, VectorStoreRecordDataField(is_filterable=True)]
+                chunk: Annotated[str, VectorStoreRecordDataField(
+                    has_embedding=True,
+                    embedding_property_name="text_vector",
+                    is_full_text_searchable=True)]
+                title: Annotated[str, VectorStoreRecordDataField(is_filterable=True)]
+                text_vector: Annotated[list[float], VectorStoreRecordVectorField(
+                    dimensions=1536, 
+                    local_embedding=True,
+                    embedding_settings={"embeddings": OpenAIEmbeddingPromptExecutionSettings(dimensions=1536)})]
+            
+            text_search = VectorStoreTextSearch.from_vector_text_search(
+                AzureAISearchCollection[Document](collection_name=app_settings.datasource.index, data_model_type=Document)
+            )
+            
+            memory_plugin = kernel.add_function(
+                plugin_name="azure_ai_search",
+                function=text_search.create_search(
+                    description="A search index of Homeowner's Associaton documents.",
+                    parameters=[
+                        KernelParameterMetadata(
+                            name="query", description="What to search for.", type="str", is_required=True, type_object=str
+                        ),
+                        KernelParameterMetadata(
+                            name="top",
+                            description="Number of results to return.",
+                            type="int",
+                            default_value=2,
+                            type_object=int,
+                        ),
+                    ]
+                )
+            )
+            
 
         logging.info(
             f"Semantic Kernel initialized with async model: {deployment}")
@@ -307,8 +377,8 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
     request_messages = request_body.get("messages", [])
     # messages = []
     history = ChatHistory()
-    if not app_settings.datasource:
-        history.add_system_message(app_settings.azure_openai.system_message)
+    #if not app_settings.datasource:
+    history.add_system_message(app_settings.azure_openai.system_message)
 
     for message in request_messages:
         if message:
@@ -334,19 +404,19 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         temperature=app_settings.azure_openai.temperature,
         top_p=app_settings.azure_openai.top_p,
         parallel_tool_calls=False,
-        tool_choice="auto",
-        # function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
+        function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
         stop=app_settings.azure_openai.stop_sequence,
     )
     
-    if len(history.messages) > 0:
-        if (history.messages[-1].role == AuthorRole.USER):
-            if app_settings.datasource:
-                azure_ai_search_settings = AzureAISearchSettings.create()
+    # if len(history.messages) > 0:
+    #     if (history.messages[-1].role == AuthorRole.USER):
+    #         if app_settings.datasource:
+    #             azure_ai_search_settings = AzureAISearchSettings.create()
 
-                az_source = AzureAISearchDataSource.from_azure_ai_search_settings(azure_ai_search_settings=azure_ai_search_settings)
-                extra = ExtraBody(data_sources=[az_source])
-                execution_settings.extra_body = extra
+    #             az_source = AzureAISearchDataSource.from_azure_ai_search_settings(azure_ai_search_settings=azure_ai_search_settings)
+    #             az_source.parameters.in_scope = False
+    #             extra = ExtraBody(data_sources=[az_source])
+    #             execution_settings.extra_body = extra
     
     return history, execution_settings
 
