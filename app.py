@@ -333,7 +333,7 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         max_tokens=app_settings.azure_openai.max_tokens,
         temperature=app_settings.azure_openai.temperature,
         top_p=app_settings.azure_openai.top_p,
-        parallel_tool_calls=False,
+        # parallel_tool_calls=False,
         tool_choice="auto",
         # function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
         stop=app_settings.azure_openai.stop_sequence,
@@ -343,6 +343,7 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         if (history.messages[-1].role == AuthorRole.USER):
             if app_settings.datasource:
                 azure_ai_search_settings = AzureAISearchSettings.create()
+
 
                 az_source = AzureAISearchDataSource.from_azure_ai_search_settings(azure_ai_search_settings=azure_ai_search_settings)
                 extra = ExtraBody(data_sources=[az_source])
