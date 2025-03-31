@@ -335,7 +335,7 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         top_p=app_settings.azure_openai.top_p,
         # parallel_tool_calls=False,
         tool_choice="auto",
-        # function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
+        function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
         stop=app_settings.azure_openai.stop_sequence,
     )
     
