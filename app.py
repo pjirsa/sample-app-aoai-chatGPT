@@ -287,7 +287,7 @@ async def init_semantic_kernel(selected_model="gpt-4o") -> tuple[Kernel, AzureCh
                 ],
             )
 
-            kernel.add_plugin(google_plugin)
+            #kernel.add_plugin(google_plugin)
             logging.info(
                 "Google search plugin registered with Semantic Kernel as WebSearch.")
         else:
@@ -333,9 +333,8 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         max_tokens=app_settings.azure_openai.max_tokens,
         temperature=app_settings.azure_openai.temperature,
         top_p=app_settings.azure_openai.top_p,
-        # parallel_tool_calls=False,
-        tool_choice="auto",
-        function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
+        parallel_tool_calls=None,
+        #function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
         stop=app_settings.azure_openai.stop_sequence,
     )
     
@@ -343,7 +342,6 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
         if (history.messages[-1].role == AuthorRole.USER):
             if app_settings.datasource:
                 azure_ai_search_settings = AzureAISearchSettings.create()
-
 
                 az_source = AzureAISearchDataSource.from_azure_ai_search_settings(azure_ai_search_settings=azure_ai_search_settings)
                 extra = ExtraBody(data_sources=[az_source])
@@ -362,16 +360,15 @@ async def send_chat_request(request_body, request_headers, is_streaming: bool = 
     request_body['messages'] = filtered_messages
     history, chat_settings = prepare_model_args(request_body, request_headers)
 
+    apim_request_id = ''
     try:
-        # azure_openai_client = await init_openai_client()
         kernel, chat_service = await init_semantic_kernel()
         
         if is_streaming:
             response = chat_service.get_streaming_chat_message_content(history, chat_settings, kernel=kernel)
         else:
             response = await chat_service.get_chat_message_content(history, chat_settings, kernel=kernel)
-        # apim_request_id = response.metadata.get("apim-request-id")
-        apim_request_id = ''
+            apim_request_id = response.metadata.get("id")
     except Exception as e:
         logging.exception("Exception in send_chat_request")
         raise e
