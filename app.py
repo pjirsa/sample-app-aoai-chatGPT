@@ -42,8 +42,7 @@ from semantic_kernel.connectors.search.google import GoogleSearch
 from semantic_kernel.functions import KernelParameterMetadata, KernelPlugin
 from semantic_kernel.contents import ChatHistory, AuthorRole
 
-bp = Blueprint("routes", __name__, static_folder="static",
-               template_folder="static")
+bp = Blueprint("routes", __name__, static_folder="static", template_folder="static")
 
 cosmos_db_ready = asyncio.Event()
 
@@ -330,9 +329,8 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
 
     execution_settings = AzureChatPromptExecutionSettings(
         service_id="chat",
-        max_tokens=app_settings.azure_openai.max_tokens,
-        temperature=app_settings.azure_openai.temperature,
-        top_p=app_settings.azure_openai.top_p,
+        # max_tokens=app_settings.azure_openai.max_tokens,
+        max_completion_tokens=app_settings.azure_openai.max_tokens,
         parallel_tool_calls=None,
         #function_choice_behavior=FunctionChoiceBehavior.Auto(auto_invoke=True),
         stop=app_settings.azure_openai.stop_sequence,
@@ -341,7 +339,8 @@ def prepare_model_args(request_body, request_headers) -> tuple[ChatHistory, Azur
     if len(history.messages) > 0:
         if (history.messages[-1].role == AuthorRole.USER):
             if app_settings.datasource:
-                azure_ai_search_settings = AzureAISearchSettings.create()
+                #azure_ai_search_settings = AzureAISearchSettings.create()
+                azure_ai_search_settings = AzureAISearchSettings(endpoint=app_settings.datasource.endpoint, index_name=app_settings.datasource.index, api_key=app_settings.datasource.key)
 
                 az_source = AzureAISearchDataSource.from_azure_ai_search_settings(azure_ai_search_settings=azure_ai_search_settings)
                 extra = ExtraBody(data_sources=[az_source])
